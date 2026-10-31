@@ -1,0 +1,276 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum MatchStatus {
+  NEW
+  VIEWED
+  SAVED
+  APPLIED
+  SKIPPED
+  LATER
+}
+
+enum ActionType {
+  VIEWED
+  OPENED
+  SAVED
+  APPLIED
+  SKIPPED
+  LATER
+}
+
+enum SyncStatus {
+  RUNNING
+  COMPLETED
+  PARTIAL
+  FAILED
+}
+
+enum AdapterStatus {
+  ACTIVE
+  NEEDS_CONFIGURATION
+  UNAVAILABLE
+}
+
+model Job {
+  id              String             @id @default(cuid())
+  sourceId        String
+  externalId      String?
+  title           String
+  company         String?
+  description     String?
+  salary          String?
+  location        String?
+  remoteType      String?
+  employmentType  String?
+  seniority       String?
+  experienceMin   Int?
+  experienceMax   Int?
+  originalUrl     String
+  normalizedUrl   String
+  publishedAt     DateTime?
+  firstSeenAt     DateTime           @default(now())
+  contentHash     String
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  source          Source             @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  sourceLinks     JobSourceLink[]
+  matches         JobProfileMatch[]
+  actions         JobAction[]
+  applications    ApplicationRecord[]
+
+  @@unique([sourceId, externalId])
+  @@unique([sourceId, contentHash])
+  @@index([firstSeenAt])
+  @@index([publishedAt])
+}
+
+model Source {
+  id            String        @id @default(cuid())
+  key           String        @unique
+  name          String
+  type          String
+  method        String
+  enabled       Boolean       @default(true)
+  adapterStatus AdapterStatus @default(NEEDS_CONFIGURATION)
+  lastSyncedAt  DateTime?
+  configuration Json?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  jobs          Job[]
+  jobLinks      JobSourceLink[]
+  syncRuns      SyncRun[]
+}
+
+model JobSourceLink {
+  id         String   @id @default(cuid())
+  jobId      String
+  sourceId   String
+  externalId String?
+  originalUrl String
+  firstSeenAt DateTime @default(now())
+  job        Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  source     Source   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, sourceId])
+  @@unique([sourceId, externalId])
+  @@index([sourceId, firstSeenAt])
+}
+
+model SearchProfile {
+  id             String             @id @default(cuid())
+  slug           String             @unique
+  name           String
+  keywords       String[]
+  excludedKeywords String[]          @default([])
+  enabled        Boolean            @default(true)
+  experienceMin  Int                @default(0)
+  experienceMax  Int                @default(2)
+  location       String             @default("Ukraine")
+  workFormat     String[]           @default(["Remote", "Hybrid", "On-site"])
+  salarySettings Json?
+  enabledSources String[]           @default([])
+  ownerId        String?
+  owner          User?              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  matches        JobProfileMatch[]
+  actions        JobAction[]
+  syncRuns       SyncRun[]
+
+  @@index([enabled])
+  @@index([ownerId, enabled])
+}
+
+model JobProfileMatch {
+  id          String        @id @default(cuid())
+  jobId       String
+  profileId   String
+  matchScore  Float         @default(0)
+  matchReason String?
+  status      MatchStatus   @default(NEW)
+  matchedAt   DateTime      @default(now())
+  job         Job           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  profile     SearchProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, profileId])
+  @@index([profileId, status])
+}
+
+model JobAction {
+  id         String        @id @default(cuid())
+  jobId      String
+  profileId  String
+  actionType ActionType
+  notes      String?
+  createdAt  DateTime      @default(now())
+  job        Job           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  profile    SearchProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([profileId, createdAt])
+}
+
+model ApplicationRecord {
+  id               String   @id @default(cuid())
+  jobId            String
+  ownerId          String?
+  applicationDate  DateTime @default(now())
+  notes            String?
+  companyResponse  String?
+  interviewStatus  String   @default("Applied")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  job              Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, ownerId])
+  @@index([ownerId, applicationDate])
+}
+
+model SyncRun {
+  id               String        @id @default(cuid())
+  sourceId         String
+  profileId        String?
+  ownerId          String?
+  status           SyncStatus    @default(RUNNING)
+  jobsFound        Int           @default(0)
+  jobsAdded        Int           @default(0)
+  duplicatesSkipped Int          @default(0)
+  errorMessage     String?
+  startedAt        DateTime      @default(now())
+  completedAt      DateTime?
+  source           Source        @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  profile          SearchProfile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
+  owner            User?          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([startedAt])
+  @@index([profileId, startedAt])
+  @@index([ownerId, startedAt])
+}
+
+model SyncLock {
+  ownerId    String   @id
+  lockedUntil DateTime
+  owner      User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+}
+
+model OwnerSetupLock {
+  id         String   @id
+  lockedUntil DateTime
+  completedAt DateTime?
+}
+
+// Better Auth identity tables. User ownership is enforced through SearchProfile.ownerId.
+model User {
+  id            String    @id
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  role          String    @default("owner")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  sessions      Session[]
+  accounts      Account[]
+  profiles      SearchProfile[]
+  syncRuns      SyncRun[]
+  syncLock      SyncLock?
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+}
+
+model RateLimit {
+  id          String @id
+  key         String @unique
+  count       Int
+  lastRequest BigInt
+}
